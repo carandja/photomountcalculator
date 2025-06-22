@@ -1,0 +1,1209 @@
+import React, { useState, useEffect, useRef } from 'react';
+
+// Helper function to convert value to millimeters
+const toMM = (value, unit) => {
+  const numValue = parseFloat(value);
+  if (isNaN(numValue)) return 0;
+  return unit === 'in' ? numValue * 25.4 : numValue;
+};
+
+// Helper function to convert value from millimeters to target unit
+const fromMM = (value, targetUnit) => {
+  const numValue = parseFloat(value);
+  if (isNaN(numValue)) return 0;
+  // If targetUnit is 'in', convert millimeters to inches (1 inch = 25.4 mm)
+  return targetUnit === 'in' ? numValue / 25.4 : numValue;
+};
+
+// Helper function to format numbers for display (rounded to 2 decimal places, no trailing zeros if integer)
+const formatNumberForDisplay = (num) => {
+  if (isNaN(num) || num === null || num === '') return ''; // Handle empty, null, or invalid input
+  const preciseNum = parseFloat(num);
+  // Round to 3 decimal places for intermediate precision before checking for trailing zeros
+  const rounded = parseFloat(preciseNum.toFixed(3)); 
+  
+  // If the number is very close to an integer (within Number.EPSILON), display as integer
+  if (Math.abs(rounded - Math.round(rounded)) < Number.EPSILON) {
+    return Math.round(rounded).toString(); 
+  }
+  
+  // Otherwise, display with up to 2 decimal places
+  return parseFloat(rounded.toFixed(2)).toString();
+};
+
+// Common styles for rects used in PieceDiagram (moved to top level)
+const rectFill = "#f0f9ff";
+const rectStroke = "#3b82f6";
+const rectStrokeWidth = "2";
+const rectRx = "5";
+const rectRy = "5";
+
+// Unified list of standard sizes. Store native unit value directly if it's clean.
+// Use width_mm/height_mm for ISO and width_in/height_in for Lab sizes.
+const ALL_STANDARD_SIZES = {
+  'Custom Size': { width_mm: '', height_mm: '', width_in: '', height_in: '' },
+  // ISO Sizes (primary in MM)
+  'A0': { width_mm: 841, height_mm: 1189 },
+  'A1': { width_mm: 594, height_mm: 841 },
+  'A2': { width_mm: 420, height_mm: 594 },
+  'A3+': { width_mm: 483, height_mm: 329 },
+  'A3': { width_mm: 297, height_mm: 420 },
+  'A4': { width_mm: 210, height_mm: 297 },
+  'A5': { width_mm: 148, height_mm: 210 },
+  'A6': { width_mm: 105, height_mm: 148 },
+  'A7': { width_mm: 74, height_mm: 105 },
+  'A8': { width_mm: 52, height_mm: 74 },
+  // Lab Sizes (primary in Inches) - Store exact inches, will convert to MM when needed.
+  '4 x 6 (Jumbo)': { width_in: 4, height_in: 6 },
+  '5 x 7': { width_in: 5, height_in: 7 },
+  '6 x 8': { width_in: 6, height_in: 8 },
+  '8 x 10': { width_in: 8, height_in: 10 },
+  '8 x 12': { width_in: 8, height_in: 12 },
+  '10 x 12': { width_in: 10, height_in: 12 },
+  '10 x 15': { width_in: 10, height_in: 15 },
+  '11 x 14': { width_in: 11, height_in: 14 },
+  '12 x 16': { width_in: 12, height_in: 16 },
+  '12 x 18': { width_in: 12, height_in: 18 },
+  '16 x 20': { width_in: 16, height_in: 20 },
+  '20 x 24': { width_in: 20, height_in: 24 },
+};
+
+// Component to render various types of piece diagrams (only photo and mount left)
+const PieceDiagram = ({
+  width, height, units, title, className,
+}) => {
+  // Parse all incoming props to numbers at the start of the component for internal use
+  const parsedWidth = parseFloat(width);
+  const parsedHeight = parseFloat(height);
+
+  // If any core dimension is invalid, don't render the diagram
+  if (isNaN(parsedWidth) || parsedWidth <= 0 || isNaN(parsedHeight) || parsedHeight <= 0) return null;
+
+  // Convert dimensions to a common base (e.g., mm) for consistent scaling calculations
+  const widthInMM = toMM(parsedWidth, units);
+  const heightInMM = toMM(parsedHeight, units);
+
+  // Define a target maximum visual size for the diagram (e.g., 150 SVG units for the largest dimension)
+  const MAX_VISUAL_DIMENSION = 150; // pixels or arbitrary SVG units
+
+  // Determine a conversion factor to scale the MM dimensions to the visual SVG units
+  // This ensures that a 300mm piece is visually proportional to a 12-inch piece.
+  let conversionToVisualUnits = 1;
+  if (widthInMM > MAX_VISUAL_DIMENSION || heightInMM > MAX_VISUAL_DIMENSION) {
+    conversionToVisualUnits = Math.min(MAX_VISUAL_DIMENSION / widthInMM, MAX_VISUAL_DIMENSION / heightInMM);
+  } else if (widthInMM < 50 && heightInMM < 50 && (widthInMM > 0 || heightInMM > 0)) {
+    // If the item is very small, scale it up to be visible (e.g., minimum 50 visual units for largest dim)
+    const minScaleUpSize = 50;
+    conversionToVisualUnits = Math.min(minScaleUpSize / widthInMM, minScaleUpSize / heightInMM);
+    // Limit maximum scale up to prevent extremely large diagrams for tiny inputs
+    conversionToVisualUnits = Math.min(conversionToVisualUnits, 5); // Don't scale up more than 5x
+  }
+
+
+  const visualWidth = widthInMM * conversionToVisualUnits;
+  const visualHeight = heightInMM * conversionToVisualUnits;
+
+  // Fixed visual padding around the diagram for dimension lines (in SVG units)
+  const VISUAL_PADDING = 40;
+
+  // Adjust viewBox to encompass the content plus fixed padding
+  const viewBoxWidth = visualWidth + VISUAL_PADDING;
+  const viewBoxHeight = visualHeight + VISUAL_PADDING;
+
+  // Position for the main rectangle within the viewBox, offset by padding
+  const rectX = VISUAL_PADDING / 2;
+  const rectY = VISUAL_PADDING / 2;
+
+  // Fixed font size and stroke width for visual consistency
+  const displayFontSize = 12; // in SVG units
+  const displayStrokeWidth = 1; // in SVG units
+  const dimLineOffset = 10; // offset for dimension lines from the rectangle edge
+
+  return (
+    <div className={`flex flex-col items-center p-2 rounded-lg bg-white shadow-sm border border-gray-200 ${className}`}>
+      <h4 className="font-semibold text-gray-700 mb-2 text-center text-md">{title}</h4>
+      <svg
+        width={Math.max(0, viewBoxWidth)} // Ensure width is non-negative
+        height={Math.max(0, viewBoxHeight)} // Ensure height is non-negative
+        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
+        className="max-w-full h-auto"
+        style={{ overflow: 'visible' }}
+      >
+        {/* Render for Photo and Mount pieces */}
+        <rect
+          x={rectX} y={rectY}
+          width={Math.max(0, visualWidth)} height={Math.max(0, visualHeight)}
+          fill={rectFill} stroke={rectStroke} strokeWidth={rectStrokeWidth} rx={rectRx} ry={rectRy}
+        />
+        {/* Dimension lines and text for Outer Width */}
+        <line x1={rectX} y1={rectY - dimLineOffset} x2={rectX + visualWidth} y2={rectY - dimLineOffset} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <line x1={rectX} y1={rectY} x2={rectX} y2={rectY - dimLineOffset} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <line x1={rectX + visualWidth} y1={rectY} x2={rectX + visualWidth} y2={rectY - dimLineOffset} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <text x={rectX + visualWidth / 2} y={rectY - (dimLineOffset + 5)} textAnchor="middle" dominantBaseline="alphabetical" fontSize={displayFontSize} fill="#4b5563">{formatNumberForDisplay(parsedWidth)}{units}</text>
+
+        {/* Dimension lines and text for Outer Height */}
+        <line x1={rectX - dimLineOffset} y1={rectY} x2={rectX - dimLineOffset} y2={rectY + visualHeight} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <line x1={rectX} y1={rectY} x2={rectX - dimLineOffset} y2={rectY} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <line x1={rectX} y1={rectY + visualHeight} x2={rectX - dimLineOffset} y2={rectY + visualHeight} stroke="#4b5563" strokeWidth={displayStrokeWidth} />
+        <text x={rectX - (dimLineOffset + 5)} y={rectY + visualHeight / 2} textAnchor="end" dominantBaseline="middle" fontSize={displayFontSize} fill="#4b5563">{formatNumberForDisplay(parsedHeight)}{units}</text>
+      </svg>
+    </div>
+  );
+};
+
+
+// Main App component for the Photo Mount Calculator
+function App() {
+  // State to determine if we're starting with photo or mount dimensions
+  const [startWith, setStartWith] = useState('photo'); // 'photo' or 'mount'
+
+  // State for unit selection
+  const [units, setUnits] = useState('in'); // 'mm' or 'in'
+
+  // Refs to store previous values for change detection in useEffect
+  const prevStartWithRef = useRef(startWith);
+  const prevUnitsRef = useRef(units);
+
+  // State for input dimensions (stored as strings from input fields)
+  const [inputPhotoWidth, setInputPhotoWidth] = useState('');
+  const [inputPhotoHeight, setInputPhotoHeight] = useState('');
+  const [inputMountWidth, setInputMountWidth] = useState('');
+  const [inputMountHeight, setInputMountHeight] = useState('');
+
+  // New state for standard mount size selection
+  const [standardMountSize, setStandardMountSize] = useState('Custom Size');
+  // New state for standard photo size selection
+  const [standardPhotoSize, setStandardPhotoSize] = useState('Custom Size');
+
+  // Configuration for overlap, overall border, and vertical offset (stored in display units)
+  const [photoToOpeningOverlap, setPhotoToOpeningOverlap] = useState(units === 'mm' ? 10 : 0.25); // per side overlap
+  const [overallBorderWidth, setOverallBorderWidth] = useState(units === 'mm' ? 60 : 2.5); // base border for all sides
+  const [verticalOffset, setVerticalOffset] = useState(0); // vertical offset for top/bottom borders
+
+  // State for image upload
+  const [uploadedImageSrc, setUploadedImageSrc] = useState(null);
+  const [originalImageWidth, setOriginalImageWidth] = useState(0);
+  const [originalImageHeight, setOriginalImageHeight] = useState(0);
+
+  // State for calculated dimensions (all in mm initially, then converted for display)
+  const [photoWidth, setPhotoWidth] = useState(0);
+  const [photoHeight, setPhotoHeight] = useState(0);
+  const [mountWidth, setMountWidth] = useState(0);
+  const [mountHeight, setMountHeight] = useState(0);
+  const [frontFrameOpeningWidth, setFrontFrameOpeningWidth] = useState(0);
+  const [frontFrameOpeningHeight, setFrontFrameOpeningHeight] = useState(0);
+  const [frontFrameOuterWidth, setFrontFrameOuterWidth] = useState(0);
+  const [frontFrameOuterHeight, setFrontFrameOuterHeight] = useState(0);
+  const [actualBorderTop, setActualBorderTop] = useState(0);
+  const [actualBorderBottom, setActualBorderBottom] = useState(0);
+  const [actualBorderLeft, setActualBorderLeft] = useState(0);
+  const [actualBorderRight, setActualBorderRight] = useState(0);
+
+  // State for displaying error messages
+  const [errorMessage, setErrorMessage] = useState('');
+
+  // Handler for image file upload
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file && file.type.startsWith('image/')) {
+      // Clear any standard photo size selection if an image is uploaded
+      setStandardPhotoSize('Custom Size');
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          setUploadedImageSrc(event.target.result);
+          setOriginalImageWidth(img.naturalWidth);
+          setOriginalImageHeight(img.naturalHeight);
+          setErrorMessage(''); // Clear any previous errors
+
+          // Retain existing width if already entered, otherwise clear to prompt user
+          const currentInputPhotoWidth = parseFloat(inputPhotoWidth);
+          if (!isNaN(currentInputPhotoWidth) && currentInputPhotoWidth > 0) {
+            // If width is already entered, height will be calculated in useEffect based on aspect ratio
+            // No need to set height here, useEffect will react to inputPhotoWidth and uploadedImageSrc
+          } else {
+            // If no width is entered, clear both to prompt user for width
+            setInputPhotoWidth('');
+            setInputPhotoHeight('');
+          }
+        };
+        img.onerror = () => {
+          setErrorMessage('Could not load image. Please try a different file.');
+          setUploadedImageSrc(null);
+          setOriginalImageWidth(0);
+          setOriginalImageHeight(0);
+          setInputPhotoWidth(''); // Clear width on error
+          setInputPhotoHeight(''); // Clear height on error
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setErrorMessage('Please upload a valid image file (e.g., JPEG, PNG).');
+      setUploadedImageSrc(null);
+      setOriginalImageWidth(0);
+      setOriginalImageHeight(0);
+      setInputPhotoWidth(''); // Clear width on invalid file
+      setInputPhotoHeight(''); // Clear height on invalid file
+    }
+  };
+
+  // Effect to re-calculate photo height when inputPhotoWidth changes and image is uploaded, or units change
+  useEffect(() => {
+    if (startWith === 'photo' && uploadedImageSrc && originalImageWidth > 0 && originalImageHeight > 0) {
+      // If a standard size is selected, don't auto-calculate height from uploaded image.
+      // The standard size logic handles it.
+      if (standardPhotoSize !== 'Custom Size') return;
+
+      const currentInputWidthValue = parseFloat(inputPhotoWidth);
+      if (!isNaN(currentInputWidthValue) && currentInputWidthValue > 0) {
+        const tempPhotoWidthMM = toMM(currentInputWidthValue, units);
+        const calculatedHeightMM = tempPhotoWidthMM / (originalImageWidth / originalImageHeight);
+        setInputPhotoHeight(formatNumberForDisplay(fromMM(calculatedHeightMM, units)));
+      } else {
+        // If inputPhotoWidth is cleared or invalid, clear inputPhotoHeight
+        setInputPhotoHeight('');
+      }
+    } else if (startWith === 'photo' && !uploadedImageSrc && standardPhotoSize === 'Custom Size') {
+      // If in photo mode, no image uploaded, and Custom Size selected, ensure height input is editable and clear
+      // If no image or standard size, the height input should be manually editable.
+      // We already clear inputPhotoHeight when a standard size is selected or image is uploaded and removed,
+      // so no explicit action needed here unless we need to re-enable it specifically.
+      // input is disabled/enabled by `disabled={standardPhotoSize !== 'Custom Size' || !!uploadedImageSrc}`
+    }
+  }, [inputPhotoWidth, uploadedImageSrc, originalImageWidth, originalImageHeight, startWith, units, standardPhotoSize]);
+
+
+  // Main useEffect for handling mode and unit changes, and performing necessary resets/conversions
+  useEffect(() => {
+    // --- Always reset calculated output dimensions regardless of trigger ---
+    setPhotoWidth(0);
+    setPhotoHeight(0);
+    setMountWidth(0);
+    setMountHeight(0);
+    setFrontFrameOpeningWidth(0);
+    setFrontFrameOpeningHeight(0);
+    setFrontFrameOuterWidth(0);
+    setFrontFrameOuterHeight(0);
+    setActualBorderTop(0);
+    setActualBorderBottom(0);
+    setActualBorderLeft(0);
+    setActualBorderRight(0);
+    setErrorMessage(''); // Clear errors
+
+    const currentStartWith = prevStartWithRef.current;
+    const currentUnits = prevUnitsRef.current;
+
+    if (currentStartWith !== startWith) { // Mode (photo/mount) changed
+      setInputPhotoWidth('');
+      setInputPhotoHeight('');
+      setInputMountWidth('');
+      setInputMountHeight('');
+      setUploadedImageSrc(null); // Clear image if mode changes
+      setOriginalImageWidth(0);
+      setOriginalImageHeight(0);
+      setStandardMountSize('Custom Size');
+      setStandardPhotoSize('Custom Size');
+      // Reset config defaults
+      setPhotoToOpeningOverlap(units === 'mm' ? 10 : 0.25);
+      setOverallBorderWidth(units === 'mm' ? 60 : 2.5);
+      setVerticalOffset(0);
+    } else if (currentUnits !== units) { // Only units changed (mode is the same)
+        // Convert existing input values to new units if they exist
+        if (startWith === 'photo') {
+            // Convert standard photo dimensions if a standard size is selected
+            if (standardPhotoSize !== 'Custom Size') {
+                const standardSize = ALL_STANDARD_SIZES[standardPhotoSize];
+                const widthToUse = standardSize.width_in !== undefined ? standardSize.width_in : fromMM(standardSize.width_mm, 'in');
+                const heightToUse = standardSize.height_in !== undefined ? standardSize.height_in : fromMM(standardSize.height_mm, 'in');
+
+                if (units === 'in') {
+                    setInputPhotoWidth(formatNumberForDisplay(widthToUse));
+                    setInputPhotoHeight(formatNumberForDisplay(heightToUse));
+                } else { // Convert to mm
+                    setInputPhotoWidth(formatNumberForDisplay(toMM(widthToUse, 'in')));
+                    setInputPhotoHeight(formatNumberForDisplay(toMM(heightToUse, 'in')));
+                }
+            } else if (uploadedImageSrc && originalImageWidth > 0 && originalImageHeight > 0) {
+                // If image is uploaded and custom size, convert current width input and recalculate height
+                const parsedInputWidth = parseFloat(inputPhotoWidth);
+                if (!isNaN(parsedInputWidth)) {
+                  const widthInMM = toMM(parsedInputWidth, currentUnits); // Convert from old units to MM
+                  setInputPhotoWidth(formatNumberForDisplay(fromMM(widthInMM, units))); // Convert to new units
+                  // Height will be recalculated by the inputPhotoWidth useEffect
+                } else {
+                    // If inputPhotoWidth was empty, clear it on unit change (as no fixed value to convert)
+                    setInputPhotoWidth('');
+                    setInputPhotoHeight('');
+                }
+            } else { // Custom photo size selected, convert existing manual inputs
+                const parsedInputWidth = parseFloat(inputPhotoWidth);
+                const parsedInputHeight = parseFloat(inputPhotoHeight);
+                if (!isNaN(parsedInputWidth)) {
+                    const widthInMM = toMM(parsedInputWidth, currentUnits);
+                    setInputPhotoWidth(formatNumberForDisplay(fromMM(widthInMM, units)));
+                }
+                if (!isNaN(parsedInputHeight)) {
+                    const heightInMM = toMM(parsedInputHeight, currentUnits);
+                    setInputPhotoHeight(formatNumberForDisplay(fromMM(heightInMM, units)));
+                }
+            }
+        } else { // startWith === 'mount'
+            // If a standard size is selected, re-apply its dimensions in the new unit
+            if (standardMountSize !== 'Custom Size') {
+              const standardSize = ALL_STANDARD_SIZES[standardMountSize];
+              const widthToUse = standardSize.width_in !== undefined ? standardSize.width_in : fromMM(standardSize.width_mm, 'in');
+              const heightToUse = standardSize.height_in !== undefined ? standardSize.height_in : fromMM(standardSize.height_mm, 'in');
+
+              if (units === 'in') {
+                  setInputMountWidth(formatNumberForDisplay(widthToUse));
+                  setInputMountHeight(formatNumberForDisplay(heightToUse));
+              } else { // Convert to mm
+                  setInputMountWidth(formatNumberForDisplay(toMM(widthToUse, 'in')));
+                  setInputMountHeight(formatNumberForDisplay(toMM(heightToUse, 'in')));
+              }
+            } else { // Custom size selected, convert existing manual inputs
+              const parsedInputMountWidth = parseFloat(inputMountWidth);
+              const parsedInputMountHeight = parseFloat(inputMountHeight);
+              if (!isNaN(parsedInputMountWidth)) {
+                  const widthInMM = toMM(parsedInputMountWidth, currentUnits);
+                  setInputMountWidth(formatNumberForDisplay(fromMM(widthInMM, units)));
+              }
+              if (!isNaN(parsedInputMountHeight)) {
+                  const heightInMM = toMM(parsedInputMountHeight, currentUnits);
+                  setInputMountHeight(formatNumberForDisplay(fromMM(heightInMM, units)));
+              }
+            }
+        }
+        // Convert and set VerticalOffset
+        const currentVerticalOffsetMM = toMM(verticalOffset, currentUnits);
+        setVerticalOffset(parseFloat(fromMM(currentVerticalOffsetMM, units).toFixed(1))); // Apply fixed precision here for input step
+
+        // Always reset config defaults when units change
+        setPhotoToOpeningOverlap(units === 'mm' ? 10 : 0.25);
+        setOverallBorderWidth(units === 'mm' ? 60 : 2.5);
+
+    }
+    // Update refs for next render
+    prevStartWithRef.current = startWith;
+    prevUnitsRef.current = units;
+  }, [startWith, units, standardMountSize, standardPhotoSize]);
+
+
+  // Handle change for standard mount size dropdown
+  const handleStandardMountSizeChange = (e) => {
+    const selectedKey = e.target.value;
+    setStandardMountSize(selectedKey);
+
+    if (selectedKey === 'Custom Size') {
+      setInputMountWidth('');
+      setInputMountHeight('');
+    } else {
+      const standardSize = ALL_STANDARD_SIZES[selectedKey];
+      let widthToSet, heightToSet;
+
+      // Prioritize native inches if available and unit is inches
+      if (standardSize.width_in !== undefined && units === 'in') {
+        widthToSet = standardSize.width_in;
+        heightToSet = standardSize.height_in;
+      } else if (standardSize.width_mm !== undefined && units === 'mm') {
+        // Prioritize native mm if available and unit is mm
+        widthToSet = standardSize.width_mm;
+        heightToSet = standardSize.height_mm;
+      } else if (standardSize.width_in !== undefined && units === 'mm') {
+        // Convert from inches to mm if only inches native value is available
+        widthToSet = toMM(standardSize.width_in, 'in');
+        heightToSet = toMM(standardSize.height_in, 'in');
+      } else if (standardSize.width_mm !== undefined && units === 'in') {
+        // Convert from mm to inches if only mm native value is available
+        widthToSet = fromMM(standardSize.width_mm, 'in');
+        heightToSet = fromMM(standardSize.height_mm, 'in');
+      }
+
+      setInputMountWidth(formatNumberForDisplay(widthToSet));
+      setInputMountHeight(formatNumberForDisplay(heightToSet));
+    }
+  };
+
+  // Handle change for standard photo size dropdown
+  const handleStandardPhotoSizeChange = (e) => {
+    const selectedKey = e.target.value;
+    setStandardPhotoSize(selectedKey);
+    // Clear any uploaded image if a standard photo size is selected
+    setUploadedImageSrc(null);
+    setOriginalImageWidth(0);
+    setOriginalImageHeight(0);
+
+    if (selectedKey === 'Custom Size') {
+      setInputPhotoWidth('');
+      setInputPhotoHeight('');
+    } else {
+      const standardSize = ALL_STANDARD_SIZES[selectedKey];
+      let widthToSet, heightToSet;
+
+      // Prioritize native inches if available and unit is inches
+      if (standardSize.width_in !== undefined && units === 'in') {
+        widthToSet = standardSize.width_in;
+        heightToSet = standardSize.height_in;
+      } else if (standardSize.width_mm !== undefined && units === 'mm') {
+        // Prioritize native mm if available and unit is mm
+        widthToSet = standardSize.width_mm;
+        heightToSet = standardSize.height_mm;
+      } else if (standardSize.width_in !== undefined && units === 'mm') {
+        // Convert from inches to mm if only inches native value is available
+        widthToSet = toMM(standardSize.width_in, 'in');
+        heightToSet = toMM(standardSize.height_in, 'in');
+      } else if (standardSize.width_mm !== undefined && units === 'in') {
+        // Convert from mm to inches if only mm native value is available
+        widthToSet = fromMM(standardSize.width_mm, 'in');
+        heightToSet = fromMM(standardSize.height_mm, 'in');
+      }
+
+      setInputPhotoWidth(formatNumberForDisplay(widthToSet));
+      setInputPhotoHeight(formatNumberForDisplay(heightToSet));
+    }
+  };
+
+  // Function to swap width and height for photo dimensions
+  const handlePhotoSwap = () => {
+    // This button is disabled if uploadedImageSrc is true.
+    // If standardPhotoSize is NOT 'Custom Size', we are swapping a standard size.
+    // If standardPhotoSize IS 'Custom Size' AND no uploadedImageSrc, we are swapping manual input.
+
+    const currentWidth = parseFloat(inputPhotoWidth);
+    const currentHeight = parseFloat(inputPhotoHeight);
+
+    if (isNaN(currentWidth) || isNaN(currentHeight)) {
+        setErrorMessage('Please enter valid numerical dimensions to swap.');
+        return;
+    }
+
+    // Perform the swap
+    setInputPhotoWidth(formatNumberForDisplay(currentHeight));
+    setInputPhotoHeight(formatNumberForDisplay(currentWidth));
+
+    // If a standard size was selected, now it's "custom" because its orientation changed
+    // This is because a standard size like A4 implies 210x297, not 297x210, unless specified as A4 landscape or similar.
+    // Since our standard list doesn't differentiate by orientation, flipping makes it 'custom'.
+    if (standardPhotoSize !== 'Custom Size') {
+        setStandardPhotoSize('Custom Size');
+    }
+    // No error message clear needed here, it happens on calculate
+  };
+
+  // Function to swap width and height for mount dimensions
+  const handleMountSwap = () => {
+    // This button is always enabled for mount dimensions.
+    
+    const currentWidth = parseFloat(inputMountWidth);
+    const currentHeight = parseFloat(inputMountHeight);
+
+    if (isNaN(currentWidth) || isNaN(currentHeight)) {
+        setErrorMessage('Please enter valid numerical dimensions to swap.');
+        return;
+    }
+
+    // Perform the swap
+    setInputMountWidth(formatNumberForDisplay(currentHeight));
+    setInputMountHeight(formatNumberForDisplay(currentWidth));
+
+    // If a standard size was selected, now it's "custom" because its orientation changed
+    if (standardMountSize !== 'Custom Size') {
+        setStandardMountSize('Custom Size');
+    }
+    // No error message clear needed here, it happens on calculate
+  };
+
+
+  // Function to calculate dimensions based on the current state
+  const calculateDimensions = () => {
+    setErrorMessage(''); // Clear previous errors
+
+    // Convert all input values to mm for consistent calculations
+    const pOverlapMM = toMM(photoToOpeningOverlap, units);
+    const oBorderWidthMM = toMM(overallBorderWidth, units);
+    const vOffsetMM = toMM(verticalOffset, units);
+
+    // Calculate actual border widths in mm
+    const calcBorderTop = oBorderWidthMM - vOffsetMM;
+    const calcBorderBottom = oBorderWidthMM + vOffsetMM;
+    const calcBorderLeft = oBorderWidthMM; // Left and Right borders are always symmetrical
+    const calcBorderRight = oBorderWidthMM;
+
+    // Validate calculated border values
+    if (calcBorderTop < 0 || calcBorderBottom < 0 || calcBorderLeft < 0 || calcBorderRight < 0) {
+      setErrorMessage('Calculated border dimension would be negative. Please adjust Overall Border Width or Vertical Offset. For example, Offset cannot be greater than Overall Border Width for the top border.');
+      return;
+    }
+
+    let pW_mm, pH_mm, mW_mm, mH_mm, ffOW_mm, ffOH_mm, ffOWouter_mm, ffOHouter_mm;
+
+    const overlapTotalMM = pOverlapMM * 2; // Total reduction for opening due to overlap
+
+    if (startWith === 'photo') {
+      const inputPW = parseFloat(inputPhotoWidth);
+      const inputPH = parseFloat(inputPhotoHeight);
+
+      // Priority: Standard Photo Size > Uploaded Image > Manual Input
+      if (standardPhotoSize !== 'Custom Size') {
+        const standardSize = ALL_STANDARD_SIZES[standardPhotoSize];
+        pW_mm = standardSize.width_in !== undefined ? toMM(standardSize.width_in, 'in') : standardSize.width_mm;
+        pH_mm = standardSize.height_in !== undefined ? toMM(standardSize.height_in, 'in') : standardSize.height_mm;
+      } else if (uploadedImageSrc && originalImageWidth > 0 && originalImageHeight > 0) {
+        if (isNaN(inputPW) || inputPW <= 0) { // Check inputPW here when it's the driving force
+          setErrorMessage(`Please enter a valid positive number for Photo Width in ${units}.`);
+          return;
+        }
+        pW_mm = toMM(inputPW, units); // Use entered width as base
+        pH_mm = pW_mm / (originalImageWidth / originalImageHeight);
+      } else { // Manual input
+        if (isNaN(inputPW) || inputPW <= 0 || isNaN(inputPH) || inputPH <= 0) {
+            setErrorMessage(`Please enter valid positive numbers for Photo Width and Height in ${units}.`);
+            return;
+        }
+        pW_mm = toMM(inputPW, units);
+        pH_mm = toMM(inputPH, units);
+      }
+
+      // Calculate front frame opening dimensions
+      ffOW_mm = pW_mm - overlapTotalMM;
+      ffOH_mm = pH_mm - overlapTotalMM;
+
+      // Validate if opening is too small
+      if (ffOW_mm <= 0 || ffOH_mm <= 0) {
+        setErrorMessage('Photo overlap is too large for the given photo dimensions. The frame opening would be zero or negative. Please reduce overlap or increase photo size.');
+        return;
+      }
+
+      // Calculate mount and front frame outer dimensions using actual border values
+      mW_mm = ffOW_mm + calcBorderLeft + calcBorderRight;
+      mH_mm = ffOH_mm + calcBorderTop + calcBorderBottom;
+
+      // Validate if mount/frame is too small
+      if (mW_mm <= 0 || mH_mm <= 0) {
+        setErrorMessage('Calculated border dimensions are too large for the frame opening. The mount/outer frame would be zero or negative. Please reduce overall border width or increase photo size.');
+        return;
+      }
+
+      // Front frame outer dimensions are the same as mount
+      ffOWouter_mm = mW_mm;
+      ffOHouter_mm = mH_mm;
+
+    } else { // startWith === 'mount'
+      // Clear image state when switching to mount-first mode (already handled by main useEffect)
+      // Also clear standard photo size selection
+      setStandardPhotoSize('Custom Size');
+
+      const inputMW = parseFloat(inputMountWidth);
+      const inputMH = parseFloat(inputMountHeight);
+
+      // If a standard mount size is selected, use its dimensions
+      if (standardMountSize !== 'Custom Size') {
+        const standardSize = ALL_STANDARD_SIZES[standardMountSize];
+        mW_mm = standardSize.width_in !== undefined ? toMM(standardSize.width_in, 'in') : standardSize.width_mm;
+        mH_mm = standardSize.height_in !== undefined ? toMM(standardSize.height_in, 'in') : standardSize.height_mm;
+      } else {
+        if (isNaN(inputMW) || isNaN(inputMH) || inputMW <= 0 || inputMH <= 0) {
+          setErrorMessage(`Please enter valid positive numbers for Mount Width and Height in ${units}.`);
+          return;
+        }
+        mW_mm = toMM(inputMW, units);
+        mH_mm = toMM(inputMH, units);
+      }
+
+
+      // Front frame outer dimensions are the same as mount
+      ffOWouter_mm = mW_mm;
+      ffOHouter_mm = mH_mm;
+
+      // Calculate front frame opening dimensions
+      ffOW_mm = mW_mm - (calcBorderLeft + calcBorderRight);
+      ffOH_mm = mH_mm - (calcBorderTop + calcBorderBottom);
+
+      // Validate if opening is too small
+      if (ffOW_mm <= 0 || ffOH_mm <= 0) {
+        setErrorMessage('Calculated border dimensions are too large for the given mount dimensions. The frame opening would be zero or negative. Please reduce overall border width or increase mount size.');
+        return;
+      }
+
+      // Calculate photo dimensions
+      pW_mm = ffOW_mm + overlapTotalMM;
+      pH_mm = ffOH_mm + overlapTotalMM;
+
+      // Validate if photo is too small
+      if (pW_mm <= 0 || pH_mm <= 0) {
+        setErrorMessage('Photo overlap is too large for the calculated frame opening. The photo size would be zero or negative. Please reduce overlap or increase mount size.');
+        return;
+      }
+    }
+
+    // Format numbers using the helper function
+    setPhotoWidth(formatNumberForDisplay(fromMM(pW_mm, units)));
+    setPhotoHeight(formatNumberForDisplay(fromMM(pH_mm, units)));
+    setMountWidth(formatNumberForDisplay(fromMM(mW_mm, units)));
+    setMountHeight(formatNumberForDisplay(fromMM(mH_mm, units)));
+    setFrontFrameOpeningWidth(formatNumberForDisplay(fromMM(ffOW_mm, units)));
+    setFrontFrameOpeningHeight(formatNumberForDisplay(fromMM(ffOH_mm, units)));
+    setFrontFrameOuterWidth(formatNumberForDisplay(fromMM(ffOWouter_mm, units)));
+    setFrontFrameOuterHeight(formatNumberForDisplay(fromMM(ffOHouter_mm, units)));
+    setActualBorderTop(formatNumberForDisplay(fromMM(calcBorderTop, units)));
+    setActualBorderBottom(formatNumberForDisplay(fromMM(calcBorderBottom, units)));
+    setActualBorderLeft(formatNumberForDisplay(fromMM(calcBorderLeft, units)));
+    setActualBorderRight(formatNumberForDisplay(fromMM(calcBorderRight, units)));
+  };
+
+  // Parse state variables for SVG rendering where they are used as numbers
+  const parsedPhotoWidth = parseFloat(photoWidth);
+  const parsedPhotoHeight = parseFloat(photoHeight);
+  const parsedMountWidth = parseFloat(mountWidth);
+  const parsedMountHeight = parseFloat(mountHeight);
+  const parsedFrontFrameOpeningWidth = parseFloat(frontFrameOpeningWidth);
+  const parsedFrontFrameOpeningHeight = parseFloat(frontFrameOpeningHeight);
+  const parsedFrontFrameOuterWidth = parseFloat(frontFrameOuterWidth);
+  const parsedFrontFrameOuterHeight = parseFloat(frontFrameOuterHeight);
+  const parsedActualBorderTop = parseFloat(actualBorderTop);
+  const parsedActualBorderBottom = parseFloat(actualBorderBottom);
+  const parsedActualBorderLeft = parseFloat(actualBorderLeft);
+  const parsedActualBorderRight = parseFloat(actualBorderRight);
+
+
+  // Variables for the Combined View SVG path (defined in scope for JSX)
+  const matOuterX = 10;
+  const matOuterY = 10;
+  const matOuterW = Math.max(0, toMM(parsedFrontFrameOuterWidth, units));
+  const matOuterH = Math.max(0, toMM(parsedFrontFrameOuterHeight, units));
+
+  const matInnerX = 10 + toMM(parsedActualBorderLeft, units);
+  const matInnerY = 10 + toMM(parsedActualBorderTop, units);
+  const matInnerW = Math.max(0, toMM(parsedFrontFrameOpeningWidth, units));
+  const matInnerH = Math.max(0, toMM(parsedFrontFrameOpeningHeight, units));
+
+
+  // Construct the path data for the mat board with a cutout
+  // Ensure all path coordinates are valid numbers, fallback to 0 if NaN
+  const pathX1 = matOuterX;
+  const pathY1 = matOuterY;
+  const pathW1 = matOuterW;
+  const pathH1 = matOuterH;
+
+  const pathX2 = matInnerX;
+  const pathY2 = matInnerY;
+  const pathW2 = matInnerW;
+  const pathH2 = matInnerH;
+
+  const matPathD = `
+    M ${pathX1} ${pathY1}
+    L ${pathX1 + pathW1} ${pathY1}
+    L ${pathX1 + pathW1} ${pathY1 + pathH1}
+    L ${pathX1} ${pathY1 + pathH1} Z
+
+    M ${pathX2} ${pathY2}
+    L ${pathX2} ${pathY2 + pathH2}
+    L ${pathX2 + pathW2} ${pathY2 + pathH2}
+    L ${pathX2 + pathW2} ${pathY2} Z
+  `;
+
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4 font-sans antialiased">
+      <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-lg">
+        <h1 className="text-3xl font-extrabold text-center text-gray-800 mb-6">
+          🖼️ James's Photo Mount Calculator
+        </h1>
+
+        {/* Unit Selection */}
+        <div className="mb-6">
+          <label className="block text-gray-700 text-lg font-semibold mb-3">
+            Measurement Units:
+          </label>
+          <div className="flex space-x-4">
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="units"
+                value="mm"
+                checked={units === 'mm'}
+                onChange={(e) => setUnits(e.target.value)}
+                className="form-radio h-5 w-5 text-purple-600 border-gray-300 rounded-full focus:ring-purple-500 transition-all duration-200"
+              />
+              <span className="ml-2 text-gray-800 text-base">Millimeters (mm)</span>
+            </label>
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="units"
+                value="in"
+                checked={units === 'in'}
+                onChange={(e) => setUnits(e.target.value)}
+                className="form-radio h-5 w-5 text-purple-600 border-gray-300 rounded-full focus:ring-purple-500 transition-all duration-200"
+              />
+              <span className="ml-2 text-gray-800 text-base">Inches (in)</span>
+            </label>
+          </div>
+        </div>
+
+        {/* Input Source Selection */}
+        <div className="mb-6">
+          <label className="block text-gray-700 text-lg font-semibold mb-3">
+            Start calculations with:
+          </label>
+          <div className="flex space-x-4">
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="startWith"
+                value="photo"
+                checked={startWith === 'photo'}
+                onChange={(e) => setStartWith(e.target.value)}
+                className="form-radio h-5 w-5 text-indigo-600 border-gray-300 rounded-full focus:ring-indigo-500 transition-all duration-200"
+              />
+              <span className="ml-2 text-gray-800 text-base">Photo Dimensions</span>
+            </label>
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="radio"
+                name="startWith"
+                value="mount"
+                checked={startWith === 'mount'}
+                onChange={(e) => setStartWith(e.target.value)}
+                className="form-radio h-5 w-5 text-indigo-600 border-gray-300 rounded-full focus:ring-indigo-500 transition-all duration-200"
+              />
+              <span className="ml-2 text-gray-800 text-base">Mount Dimensions</span>
+            </label>
+          </div>
+        </div>
+
+        {/* Image Upload and Standard Photo Size (conditionally shown for Photo Dimensions mode) */}
+        {startWith === 'photo' && (
+          <>
+            <div className="mb-4 p-4 border border-dashed border-gray-300 rounded-lg bg-gray-50 text-center">
+              <label htmlFor="standardPhotoSize" className="block text-gray-700 text-sm font-medium mb-2">
+                Choose Standard Photo Size:
+              </label>
+              <select
+                id="standardPhotoSize"
+                value={standardPhotoSize}
+                onChange={handleStandardPhotoSizeChange}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 mb-4"
+                disabled={!!uploadedImageSrc} // Disable if image is uploaded
+              >
+                {Object.keys(ALL_STANDARD_SIZES).map((key) => (
+                  <option key={key} value={key}>{key}</option>
+                ))}
+              </select>
+
+              <p className="text-sm text-gray-600 mb-2">OR</p>
+
+              <label htmlFor="imageUpload" className="block text-gray-700 text-sm font-medium mb-2 cursor-pointer">
+                Upload Photo for Aspect Ratio Calculation:
+              </label>
+              <input
+                type="file"
+                id="imageUpload"
+                accept="image/*"
+                onChange={handleImageUpload}
+                disabled={standardPhotoSize !== 'Custom Size'} // Disable if standard size is selected
+                className="block w-full text-sm text-gray-500
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-full file:border-0
+                  file:text-sm file:font-semibold
+                  file:bg-indigo-50 file:text-indigo-700
+                  hover:file:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              {uploadedImageSrc && (
+                <p className="text-sm text-green-600 mt-2">
+                  Photo uploaded. Original dimensions: {originalImageWidth}x{originalImageHeight}px.
+                </p>
+              )}
+              {!uploadedImageSrc && standardPhotoSize === 'Custom Size' && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Upload an image to automatically calculate its height based on the width you provide.
+                  </p>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Input Fields */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          {startWith === 'photo' ? (
+            <>
+              <div>
+                <label htmlFor="photoWidth" className="block text-gray-700 text-sm font-medium mb-1">
+                  Photo Width ({units})
+                </label>
+                <input
+                  type="number"
+                  id="photoWidth"
+                  value={inputPhotoWidth}
+                  onChange={(e) => setInputPhotoWidth(e.target.value)}
+                  disabled={standardPhotoSize !== 'Custom Size'} // Only disable if a standard size is chosen
+                  placeholder={`e.g., ${units === 'mm' ? '200' : '8'}`}
+                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 ${standardPhotoSize !== 'Custom Size' ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="flex-grow">
+                  <label htmlFor="photoHeight" className="block text-gray-700 text-sm font-medium mb-1">
+                    Photo Height ({units})
+                  </label>
+                  <input
+                    type="number"
+                    id="photoHeight"
+                    value={inputPhotoHeight}
+                    onChange={(e) => setInputPhotoHeight(e.target.value)}
+                    disabled={true} // Always disabled, calculated by standard size or aspect ratio
+                    placeholder={`e.g., ${units === 'mm' ? '150' : '6'}`}
+                    className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 bg-gray-100 cursor-not-allowed`}
+                  />
+                  {(standardPhotoSize !== 'Custom Size' || !!uploadedImageSrc) && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Height is calculated automatically.
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={handlePhotoSwap}
+                  disabled={!!uploadedImageSrc} // Only disable if image is uploaded (locks aspect ratio)
+                  className={`px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200 ${!!uploadedImageSrc ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  title="Swap Photo Width and Height"
+                >
+                  ↔
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Standard Mount Size Dropdown */}
+              <div className="col-span-2">
+                <label htmlFor="standardMountSize" className="block text-gray-700 text-sm font-medium mb-1">
+                  Choose Standard Mount Size:
+                </label>
+                <select
+                  id="standardMountSize"
+                  value={standardMountSize}
+                  onChange={handleStandardMountSizeChange}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900"
+                >
+                  {Object.keys(ALL_STANDARD_SIZES).map((key) => (
+                    <option key={key} value={key}>{key}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="mountWidth" className="block text-gray-700 text-sm font-medium mb-1">
+                  Mount Width ({units})
+                </label>
+                <input
+                  type="number"
+                  id="mountWidth"
+                  value={inputMountWidth}
+                  onChange={(e) => setInputMountWidth(e.target.value)}
+                  disabled={standardMountSize !== 'Custom Size'}
+                  placeholder={`e.g., ${units === 'mm' ? '300' : '12'}`}
+                  className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 ${standardMountSize !== 'Custom Size' ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="flex-grow">
+                  <label htmlFor="mountHeight" className="block text-gray-700 text-sm font-medium mb-1">
+                    Mount Height ({units})
+                  </label>
+                  <input
+                    type="number"
+                    id="mountHeight"
+                    value={inputMountHeight}
+                    onChange={(e) => setInputMountHeight(e.target.value)}
+                    disabled={standardMountSize !== 'Custom Size'}
+                    placeholder={`e.g., ${units === 'mm' ? '250' : '10'}`}
+                    className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 ${standardMountSize !== 'Custom Size' ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  />
+                </div>
+                <button
+                  onClick={handleMountSwap}
+                  disabled={false} // Always enabled for mount as aspect ratio is not locked
+                  className={`px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200`}
+                  title="Swap Mount Width and Height"
+                >
+                  ↔
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Configuration for Overlap and Borders */}
+          <div>
+            <label htmlFor="overlap" className="block text-gray-700 text-sm font-medium mb-1">
+              Photo Overlap ({units}/side)
+            </label>
+            <input
+              type="number"
+              id="overlap"
+              value={photoToOpeningOverlap}
+              onChange={(e) => setPhotoToOpeningOverlap(parseFloat(e.target.value))}
+              placeholder={`e.g., ${units === 'mm' ? '10' : '0.25'}`}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              How much the frame opening is smaller than the photo edge (per side).
+            </p>
+          </div>
+          <div>
+            <label htmlFor="overallBorderWidth" className="block text-gray-700 text-sm font-medium mb-1">
+              Overall Border ({units}/side)
+            </label>
+            <input
+              type="number"
+              id="overallBorderWidth"
+              value={overallBorderWidth}
+              onChange={(e) => setOverallBorderWidth(parseFloat(e.target.value))}
+              placeholder={`e.g., ${units === 'mm' ? '60' : '2.5'}`}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Base width of the mount border around the photo opening (per side).
+            </p>
+          </div>
+          <div>
+            <label htmlFor="verticalOffset" className="block text-gray-700 text-sm font-medium mb-1">
+              Vertical Offset ({units})
+            </label>
+            <input
+              type="number"
+              id="verticalOffset"
+              value={verticalOffset}
+              onChange={(e) => setVerticalOffset(parseFloat(e.target.value))}
+              step={units === 'in' ? '0.1' : '1'} // Set step based on units
+              placeholder={`e.g., ${units === 'mm' ? '0' : '0'}`}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Positive value shifts photo up (larger bottom border), negative shifts down.
+            </p>
+          </div>
+        </div>
+
+        {/* Error Message Display */}
+        {errorMessage && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-6 shadow-md" role="alert">
+            <strong className="font-bold">Error!</strong>
+            <span className="block sm:inline ml-2">{errorMessage}</span>
+          </div>
+        )}
+
+        {/* Calculate Button */}
+        <button
+          onClick={calculateDimensions}
+          className="w-full bg-gradient-to-r from-indigo-500 to-blue-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:from-indigo-600 hover:to-blue-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition-all duration-300 transform hover:scale-105 mb-4"
+        >
+          Calculate Dimensions
+        </button>
+
+        {/* Print Button */}
+        <button
+          onClick={() => window.print()}
+          className="w-full bg-gray-500 text-white font-bold py-3 px-6 rounded-xl shadow-lg hover:bg-gray-600 focus:outline-none focus:ring-4 focus:ring-gray-500 focus:ring-opacity-50 transition-all duration-300 transform hover:scale-105"
+        >
+          🖨️ Print Results
+        </button>
+
+        {/* Results Display */}
+        { (parseFloat(photoWidth) > 0 && parseFloat(photoHeight) > 0) || (parseFloat(mountWidth) > 0 && parseFloat(mountHeight) > 0) ? (
+          <div className="bg-blue-50 p-6 rounded-xl shadow-inner border border-blue-200 mt-8" id="printable-results">
+            <h2 className="text-2xl font-bold text-center text-gray-800 mb-4">
+              Your Cut Piece Dimensions:
+            </h2>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center bg-blue-100 p-3 rounded-lg shadow-sm">
+                <span className="font-medium text-blue-800">Photo Piece:</span>
+                <span className="text-blue-900 text-lg font-semibold">{photoWidth}{units} x {photoHeight}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-blue-100 p-3 rounded-lg shadow-sm">
+                <span className="font-medium text-blue-800">Mount Piece:</span>
+                <span className="text-blue-900 text-lg font-semibold">{mountWidth}{units} x {mountHeight}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-blue-100 p-3 rounded-lg shadow-sm">
+                <span className="font-medium text-blue-800">Front Frame (Outer):</span>
+                <span className="text-blue-900 text-lg font-semibold">{frontFrameOuterWidth}{units} x {frontFrameOuterHeight}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-blue-100 p-3 rounded-lg shadow-sm">
+                <span className="font-medium text-blue-800">Front Frame (Opening):</span>
+                <span className="text-blue-900 text-lg font-semibold">{frontFrameOpeningWidth}{units} x {frontFrameOpeningHeight}{units}</span>
+              </div>
+            </div>
+
+            <h3 className="text-xl font-bold text-gray-700 mt-6 mb-3 text-center">
+              Detailed Border Measurements:
+            </h3>
+            <div className="space-y-2">
+              <div className="flex justify-between items-center bg-gray-100 p-2 rounded-lg">
+                <span className="font-medium text-gray-700">Top Border:</span>
+                <span className="text-gray-900 text-base font-semibold">{actualBorderTop}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-gray-100 p-2 rounded-lg">
+                <span className="font-medium text-gray-700">Bottom Border:</span>
+                <span className="text-gray-900 text-base font-semibold">{actualBorderBottom}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-gray-100 p-2 rounded-lg">
+                <span className="font-medium text-gray-700">Left Border:</span>
+                <span className="text-gray-900 text-base font-semibold">{actualBorderLeft}{units}</span>
+              </div>
+              <div className="flex justify-between items-center bg-gray-100 p-2 rounded-lg">
+                <span className="font-medium text-gray-700">Right Border:</span>
+                <span className="text-gray-900 text-base font-semibold">{actualBorderRight}{units}</span>
+              </div>
+            </div>
+
+            {/* Visual Representations Section */}
+            <div className="mt-8 pt-6 border-t border-gray-300">
+              <h2 className="text-2xl font-bold text-gray-800 mb-4 text-center">
+                Visual Representations
+              </h2>
+
+              {/* Combined View */}
+              <div className="mb-8 p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <h3 className="text-xl font-bold text-gray-700 mb-3 text-center">
+                  Combined View
+                </h3>
+                <div className="flex justify-center items-center">
+                  <svg
+                    width="100%"
+                    height="auto"
+                    // Ensure all values are parsed to numbers and are non-negative for viewBox
+                    viewBox={`0 0 ${Math.max(0, toMM(parsedMountWidth, units) + 20)} ${Math.max(0, toMM(parsedMountHeight, units) + 20)}`}
+                    className="max-w-xs h-auto bg-gray-100 rounded-lg shadow-md"
+                    style={{ overflow: 'visible' }} // Allow dimensions lines to go outside
+                  >
+                    {/* Define Photo Pattern - only if image is uploaded and valid */}
+                    {uploadedImageSrc && originalImageWidth > 0 && originalImageHeight > 0 && (
+                      <defs>
+                        <pattern id="uploadedPhotoPattern"
+                                 x="0" y="0" width="100%" height="100%"
+                                 viewBox={`0 0 ${originalImageWidth} ${originalImageHeight}`}
+                                 preserveAspectRatio="xMidYMid slice">
+                          <image href={uploadedImageSrc} x="0" y="0" width={originalImageWidth} height={originalImageHeight} />
+                        </pattern>
+                      </defs>
+                    )}
+
+                    {/* Mount Piece */}
+                    <rect
+                      x="10"
+                      y="10"
+                      width={Math.max(0, toMM(parsedMountWidth, units))}
+                      height={Math.max(0, toMM(parsedMountHeight, units))}
+                      fill="#e0e7ff"
+                      stroke="#4f46e5"
+                      strokeWidth="2"
+                      rx="8" ry="8"
+                    />
+                    <text x={10 + toMM(parsedMountWidth, units) / 2} y={10 + toMM(parsedMountHeight, units) / 2} textAnchor="middle" dominantBaseline="middle" fontSize="16" fill="#1e3a8a" className="font-bold">Mount Pieces</text>
+
+                    {/* Photo Piece - now uses pattern fill if image is uploaded */}
+                    <rect
+                      x={10 + toMM(parsedActualBorderLeft, units) - toMM(parseFloat(photoToOpeningOverlap), units)}
+                      y={10 + toMM(parsedActualBorderTop, units) - toMM(parseFloat(photoToOpeningOverlap), units)}
+                      width={Math.max(0, toMM(parsedPhotoWidth, units))}
+                      height={Math.max(0, toMM(parsedPhotoHeight, units))}
+                      fill={uploadedImageSrc ? "url(#uploadedPhotoPattern)" : "#bfdbfe"}
+                      stroke="#3b82f6"
+                      strokeWidth="2"
+                      rx="6" ry="6"
+                    />
+                    {/* "Photo" text is intentionally removed to prevent overlap */}
+
+
+                    {/* Front Frame Piece (the mat board with the opening) */}
+                    <path
+                      d={matPathD}
+                      fill="#e0f2fe" // The color of the mat board itself
+                      fillRule="evenodd" // Crucial for creating the hole
+                      stroke="#2563eb"
+                      strokeWidth="2"
+                    />
+                    {/* Text for "Frame Opening" still exists inside the hole */}
+                    <text x={matInnerX + matInnerW / 2} y={matInnerY + matInnerH / 2} textAnchor="middle" dominantBaseline="middle" fontSize="12" fill="#1c4b91">Frame Opening</text>
+
+                  </svg>
+                </div>
+                <p className="text-sm text-gray-600 mt-4 text-center">
+                  Outer blue represents mount, the image (or medium blue fallback) is the photo, and the top layer with the central cutout is the front frame.
+                </p>
+              </div>
+
+              {/* Individual Pieces */}
+              <div className="p-4 rounded-lg bg-gray-50 border border-gray-200">
+                <h3 className="text-xl font-bold text-gray-700 mb-3 text-center">
+                  Individual Pieces for Cutting
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <PieceDiagram
+                    title="1. Photo Piece"
+                    width={photoWidth}
+                    height={photoHeight}
+                    units={units}
+                  />
+                  <PieceDiagram
+                    title="2. Mount Pieces"
+                    width={mountWidth}
+                    height={mountHeight}
+                    units={units}
+                  />
+                </div>
+
+                {/* New table for Front Frame Cutting Guide */}
+                <h3 className="text-xl font-bold text-gray-700 mt-6 mb-3 text-center">
+                  Front Frame Cutting Guide
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full bg-white rounded-lg shadow-md overflow-hidden">
+                    <thead>
+                      <tr className="bg-blue-100 text-blue-800 uppercase text-sm leading-normal">
+                        <th className="py-3 px-6 text-left">Measurement</th>
+                        <th className="py-3 px-6 text-right">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-gray-700 text-sm font-light">
+                      <tr className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Opening Width</td>
+                        <td className="py-3 px-6 text-right">{frontFrameOpeningWidth}{units}</td>
+                      </tr>
+                      <tr className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Opening Height</td>
+                        <td className="py-3 px-6 text-right">{frontFrameOpeningHeight}{units}</td>
+                      </tr>
+                      <tr className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Offset from Top Edge</td>
+                        <td className="py-3 px-6 text-right">{actualBorderTop}{units}</td>
+                      </tr>
+                      <tr className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Offset from Bottom Edge</td>
+                        <td className="py-3 px-6 text-right">{actualBorderBottom}{units}</td>
+                      </tr>
+                      <tr className="border-b border-gray-200 hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Offset from Left Edge</td>
+                        <td className="py-3 px-6 text-right">{actualBorderLeft}{units}</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="py-3 px-6 text-left whitespace-nowrap">Offset from Right Edge</td>
+                        <td className="py-3 px-6 text-right">{actualBorderRight}{units}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        ) : (
+          <div className="text-center text-gray-500 mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            Enter your dimensions above and click "Calculate" to see the results and visuals.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
