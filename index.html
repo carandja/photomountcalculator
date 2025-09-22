@@ -909,9 +909,9 @@
                                 id="photoHeight"
                                 value={inputPhotoHeight}
                                 onChange={(e) => setInputPhotoHeight(e.target.value)}
-                                disabled={true} // Always disabled, calculated by standard size or aspect ratio
+                                disabled={standardPhotoSize !== 'Custom Size' || !!uploadedImageSrc}
                                 placeholder={`e.g., ${units === 'mm' ? '150' : '6'}`}
-                                className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 bg-gray-100 cursor-not-allowed`}
+                                className={`w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 transition-all duration-200 text-gray-900 ${(standardPhotoSize !== 'Custom Size' || !!uploadedImageSrc) ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                               />
                               {(standardPhotoSize !== 'Custom Size' || !!uploadedImageSrc) && (
                                 <p className="text-xs text-gray-500 mt-1">
@@ -978,8 +978,7 @@
                             </div>
                             <button
                               onClick={handleMountSwap}
-                              disabled={standardMountSize !== 'Custom Size' ? true : false} // Disable if standard size is selected
-                              className={`px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200 ${standardMountSize !== 'Custom Size' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200"
                               title="Swap Mount Width and Height"
                             >
                               ↔
@@ -1270,3 +1269,4 @@
     </script>
 </body>
 </html>
+
